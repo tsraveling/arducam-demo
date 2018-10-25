@@ -14,6 +14,9 @@
 // This program requires the ArduCAM V4.0.0 (or later) library and ArduCAM ESP8266 2MP camera
 // and use Arduino IDE 1.5.8 compiler or above
 
+// This program has been refactored for clarity and heavily annotated by Tim Raveling.
+// https://github.com/tsraveling
+
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
@@ -47,8 +50,8 @@ const char *AP_password = "";
 
 // Station mode configuration. Put the ssid and WIFI password of your local network here in order to set it up on an extant
 // wifi network. Note that the Serial Monitor will spit out the IP address of the ArduCAM once it starts up.
-const char *ssid = "";
-const char *password = "";
+const char *ssid = "SSID";
+const char *password = "PASSWORD";
 
 // This board has a custom web server that we'll use to stream data
 ESP8266WebServer server(80);
@@ -74,7 +77,7 @@ bool checkSize(size_t len) {
     return false;
   }
 
-  return true
+  return true;
 }
 
 // This function gets called at the start of a data transfer operation
@@ -98,30 +101,44 @@ void camCapture(ArduCAM myCAM){
   // Get the wifi client
   WiFiClient client = server.client();
 
-  // Read image length from 0x42 - 0x44 and make sure it's a valid size
+  // Get image length and make sure it's valid
   size_t len = myCAM.read_fifo_length();
-  if (!checkSize(size_t)) return;
+  if (!checkSize(len)) return;
 
   // Start the transfer
   startTransfer();
-  
+
+  // Make sure we're connected to the wifi still
   if (!client.connected()) return;
+
+  // Send a 200 response from our little mini-server
   String response = "HTTP/1.1 200 OK\r\n";
   response += "Content-Type: image/jpeg\r\n";
   response += "Content-Length: " + String(len) + "\r\n\r\n";
   server.sendContent(response);
-  
+
+  // Set up our buffers
   static const size_t bufferSize = 4096;
   static uint8_t buffer[bufferSize] = {0xFF};
-  
+
+  // Loop through the size of the data we've received
   while (len) {
-      size_t will_copy = (len < bufferSize) ? len : bufferSize;
-      SPI.transferBytes(&buffer[0], &buffer[0], will_copy);
+
+      // Grab the next chunk of data
+      size_t amountToCopy = (len < bufferSize) ? len : bufferSize;
+      SPI.transferBytes(&buffer[0], &buffer[0], amountToCopy);
+
+      // Make sure we're still connected to the wifi client
       if (!client.connected()) break;
-      client.write(&buffer[0], will_copy);
-      len -= will_copy;
+
+      // Send the data into our response
+      client.write(&buffer[0], amountToCopy);
+
+      // Decrement the data left to copy and continue
+      len -= amountToCopy;
   }
-  
+
+  // Pull the CS pin back high to signal completion of transfer
   myCAM.CS_HIGH();
 }
 
@@ -192,6 +209,8 @@ void serverStream(){
   }
 }
 
+// This function wraps the beefier camCapture function in order to get some performance data
+// out of our chip.
 void serverCapture(){
   
   start_capture();
@@ -216,7 +235,11 @@ void serverCapture(){
   Serial.println("CAM send Done!");
 }
 
-void handleNotFound(){
+// This functions as a sort of catchall / default endpoint rather than the more
+// standard dedicated 404 response. This endpoint will simply inform the client
+// that the server is running and update the quality level if needed.
+void handleNotFound() {
+  
   String message = "Server is running!\n\n";
   message += "URI: ";
   message += server.uri();
@@ -226,33 +249,48 @@ void handleNotFound(){
   message += server.args();
   message += "\n";
   server.send(200, "text/plain", message);
-  
+
+  // If we've received a `ql` argument, we can update the camera's quality level.
   if (server.hasArg("ql")){
+
+    // Convert the argument to an int.
     int ql = server.arg("ql").toInt();
-    myCAM.OV2640_set_JPEG_size(ql);delay(1000);
+
+    // Send that to the camera object
+    myCAM.OV2640_set_JPEG_size(ql);
+
+    // Wait a second, then let the Monitor know what happened
+    delay(1000);
     Serial.println("QL change to: " + server.arg("ql"));
   }
 }
 
+
+// Called when the board initializes
 void setup() {
+  
   uint8_t vid, pid;
   uint8_t temp;
-#if defined(__SAM3X8E__)
-  Wire1.begin();
-#else
-  Wire.begin();
-#endif
+
+  // Use Wire1 if we're using a SAM3X8E microcontroller, otherwise use a regular Wire
+  #if defined(__SAM3X8E__)
+    Wire1.begin();
+  #else
+    Wire.begin();
+  #endif
+
+  // Start Serial on 115200 baud (don't forget to set your Serial Monitor accordingly)
   Serial.begin(115200);
   Serial.println("ArduCAM Start!");
 
-  // set the CS as an output:
+  // Set the CS pin as an output:
   pinMode(CS, OUTPUT);
 
-  // initialize SPI:
+  // Innitialize the SPI:
   SPI.begin();
   SPI.setFrequency(4000000); //4MHz
 
-  //Check if the ArduCAM SPI bus is OK
+  // Make sure the ArduCAM SPI bus is OK
   myCAM.write_reg(ARDUCHIP_TEST1, 0x55);
   temp = myCAM.read_reg(ARDUCHIP_TEST1);
   if (temp != 0x55){
@@ -260,15 +298,14 @@ void setup() {
     while(1);
   }
 
-  //Check if the camera module type is OV2640
+  // Make sure we're actually using a OV2640 camera module
   myCAM.wrSensorReg8_8(0xff, 0x01);
   myCAM.rdSensorReg8_8(OV2640_CHIPID_HIGH, &vid);
   myCAM.rdSensorReg8_8(OV2640_CHIPID_LOW, &pid);
-   if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 )))
+  if ((vid != 0x26 ) && (( pid != 0x41 ) || ( pid != 0x42 )))
     Serial.println("Can't find OV2640 module!");
-    else
+  else
     Serial.println("OV2640 detected.");
- 
 
   //Change to JPEG capture mode and initialize the OV2640 module
   myCAM.set_format(JPEG);
@@ -276,7 +313,10 @@ void setup() {
   myCAM.OV2640_set_JPEG_size(OV2640_320x240);
   myCAM.clear_fifo_flag();
 
-  if (wifiType == 0){
+  // Set up our server based on whether we decided to use the station (0) or AP (1) model
+  if (wifiType == 0) {
+
+    // Make sure we've entered wifi credentials
     if(!strcmp(ssid,"SSID")){
        Serial.println("Please set your SSID");
        while(1);
@@ -285,43 +325,62 @@ void setup() {
        Serial.println("Please set your PASSWORD");
        while(1);
     }
-    // Connect to WiFi network
+    
+    // Let the Monitor know what's going on
     Serial.println();
     Serial.println();
     Serial.print("Connecting to ");
     Serial.println(ssid);
-    
+
+    // Connect to the WiFi network specified
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
+
+    // If we can't connect immediately, wait half a second and try again    
     while (WiFi.status() != WL_CONNECTED) {
       delay(500);
       Serial.print(".");
     }
+
+    // Once we have connected, let the Monitor know and continue on
     Serial.println("WiFi connected");
     Serial.println("");
+
+    // Kick the local IP of the Arducam board to the Monitor so we know how to connect to it
     Serial.println(WiFi.localIP());
-  }else if (wifiType == 1){
+    
+  } else if (wifiType == 1) {
+
+    // For AP mode, we're generating our own wifi network, so kick the credentials we've defined to
+    // the Monitor for convenience' sake.
     Serial.println();
     Serial.println();
     Serial.print("Share AP: ");
     Serial.println(AP_ssid);
     Serial.print("The password is: ");
     Serial.println(AP_password);
-    
+
+    // Let the WiFi object know to start it's own network
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_ssid, AP_password);
     Serial.println("");
     Serial.println(WiFi.softAPIP());
   }
   
-  // Start the server
+  // Start the server and define our endpoints (for image, stream, and 404 respectively)
   server.on("/capture", HTTP_GET, serverCapture);
   server.on("/stream", HTTP_GET, serverStream);
   server.onNotFound(handleNotFound);
   server.begin();
+
+  // Let the Monitor know we're done
   Serial.println("Server started");
 }
 
+// Standard Arduino loop function
 void loop() {
+
+  // Let our little mini-server know to listen to it's endpoints, as everything on this particular project
+  // is initiated through hitting those via a browser.
   server.handleClient();
 }
